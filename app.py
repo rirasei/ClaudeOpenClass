@@ -6,13 +6,25 @@ from datetime import datetime
 
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
+from upstash_redis import Redis
 
 app = FastAPI()
 
 DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "guestboard.json")
+ENTRIES_KEY = "guestboard:entries"
+
+# Vercel's filesystem is read-only in production, so entries are stored in
+# Upstash/Vercel KV Redis there. Locally (no KV env vars set) we fall back to
+# the JSON file so the app still runs without any extra setup.
+_REDIS_URL = os.environ.get("KV_REST_API_URL") or os.environ.get("UPSTASH_REDIS_REST_URL")
+_REDIS_TOKEN = os.environ.get("KV_REST_API_TOKEN") or os.environ.get("UPSTASH_REDIS_REST_TOKEN")
+redis_client = Redis(url=_REDIS_URL, token=_REDIS_TOKEN) if _REDIS_URL and _REDIS_TOKEN else None
 
 
 def load_entries() -> list[dict]:
+    if redis_client:
+        raw = redis_client.get(ENTRIES_KEY)
+        return json.loads(raw) if raw else []
     if not os.path.exists(DATA_FILE):
         return []
     with open(DATA_FILE, "r", encoding="utf-8") as f:
@@ -20,6 +32,9 @@ def load_entries() -> list[dict]:
 
 
 def save_entries(entries: list[dict]) -> None:
+    if redis_client:
+        redis_client.set(ENTRIES_KEY, json.dumps(entries, ensure_ascii=False))
+        return
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(entries, f, ensure_ascii=False, indent=2)
 
